@@ -1,4 +1,4 @@
-`shared-stream` is a crate for easily cloneable streams.
+`shared_stream` is a crate for easily cloneable streams.
 
 # Usage
 
@@ -6,10 +6,10 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-shared-stream = "0.1"
+shared_stream = "0.1"
 ```
 
-Now, you can use shared-stream:
+Now, you can use shared_stream:
 
 ```rust
 use shared_stream::Share;
