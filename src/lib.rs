@@ -61,19 +61,27 @@ use futures_core::ready;
 use futures_core::{FusedStream, Stream};
 use pin_project_lite::pin_project;
 use std::cell::RefCell;
+use std::fmt;
 use std::mem;
 use std::rc::Rc;
 
 pin_project! {
     #[project = InnerStateProj]
     #[derive(Debug)]
-    enum InnerState<I, S> {
-        Running { values: Vec<I>, #[pin] stream: S },
-        Finished { values: Vec<I> },
+    enum InnerState<S: Stream> {
+        Running { values: Vec<S::Item>, #[pin] stream: S },
+        Finished { values: Vec<S::Item> },
     }
 }
-impl<I: Clone, S: Stream<Item = I>> InnerState<I, S> {
-    fn get_item(mut self: Pin<&mut Self>, idx: usize, cx: &mut Context<'_>) -> Poll<Option<I>> {
+impl<S: Stream> InnerState<S>
+where
+    S::Item: Clone,
+{
+    fn get_item(
+        mut self: Pin<&mut Self>,
+        idx: usize,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<S::Item>> {
         loop {
             let this = self.as_mut().project();
             return Poll::Ready(match this {
@@ -98,14 +106,26 @@ impl<I: Clone, S: Stream<Item = I>> InnerState<I, S> {
 }
 
 /// Stream for the [`shared`](Share::shared) method.
-#[derive(Debug)]
 #[must_use = "streams do nothing unless polled"]
-pub struct Shared<I, S> {
-    inner: Rc<RefCell<InnerState<I, S>>>,
+pub struct Shared<S: Stream> {
+    inner: Rc<RefCell<InnerState<S>>>,
     idx: usize,
 }
 
-impl<I: Clone, S: Stream<Item = I>> Shared<I, S> {
+impl<S: Stream> fmt::Debug for Shared<S>
+where
+    S: fmt::Debug,
+    S::Item: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Shared")
+            .field("inner", &self.inner)
+            .field("idx", &self.idx)
+            .finish()
+    }
+}
+
+impl<S: Stream> Shared<S> {
     pub(crate) fn new(stream: S) -> Self {
         Self {
             inner: Rc::new(RefCell::new(InnerState::Running {
@@ -117,7 +137,7 @@ impl<I: Clone, S: Stream<Item = I>> Shared<I, S> {
     }
 }
 
-impl<I, S> Clone for Shared<I, S> {
+impl<S: Stream> Clone for Shared<S> {
     fn clone(&self) -> Self {
         Self {
             inner: Rc::clone(&self.inner),
@@ -126,14 +146,17 @@ impl<I, S> Clone for Shared<I, S> {
     }
 }
 
-impl<I: Clone, S: Stream<Item = I>> Stream for Shared<I, S> {
-    type Item = I;
+impl<S: Stream> Stream for Shared<S>
+where
+    S::Item: Clone,
+{
+    type Item = S::Item;
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         // pin project Pin<&mut Self> -> Pin<&mut InnerState<I, S>>
         // this is only safe because we don't do anything else with Self::inner except
         // cloning (the Rc) which doesn't move its content or make it accessible.
         let result = unsafe {
-            let inner: &RefCell<InnerState<I, S>> =
+            let inner: &RefCell<InnerState<S>> =
                 Pin::into_inner_unchecked(self.as_ref()).inner.as_ref();
             Pin::new_unchecked(&mut *inner.borrow_mut()).get_item(self.idx, cx)
         };
@@ -159,7 +182,10 @@ impl<I: Clone, S: Stream<Item = I>> Stream for Shared<I, S> {
     }
 }
 
-impl<I: Clone, S: Stream<Item = I>> FusedStream for Shared<I, S> {
+impl<S: Stream> FusedStream for Shared<S>
+where
+    S::Item: Clone,
+{
     fn is_terminated(&self) -> bool {
         match &*self.inner.borrow() {
             InnerState::Running { .. } => false,
@@ -173,7 +199,7 @@ pub trait Share: Stream {
     /// Turns this stream into a cloneable stream. Polled items are cached and cloned.
     ///
     /// Note that this function consumes the stream passed into it and returns a wrapped version of it.
-    fn shared(self) -> Shared<Self::Item, Self>
+    fn shared(self) -> Shared<Self>
     where
         Self: Sized,
         Self::Item: Clone;
@@ -183,7 +209,7 @@ impl<T: Stream> Share for T
 where
     T::Item: Clone,
 {
-    fn shared(self) -> Shared<Self::Item, Self> {
+    fn shared(self) -> Shared<Self> {
         Shared::new(self)
     }
 }
