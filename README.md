@@ -6,7 +6,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-shared_stream = "0.1"
+shared_stream = "0.2"
 ```
 
 Now, you can use shared_stream:
