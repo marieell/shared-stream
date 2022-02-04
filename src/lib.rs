@@ -170,14 +170,16 @@ where
     fn size_hint(&self) -> (usize, Option<usize>) {
         match &*self.inner.borrow() {
             InnerState::Running { values, stream } => {
-                let upstream_cached = values.len();
+                let upstream_cached = values.len() - self.idx;
                 let upstream = stream.size_hint();
                 (
                     upstream.0 + upstream_cached,
                     upstream.1.map(|v| v + upstream_cached),
                 )
             }
-            InnerState::Finished { values } => (values.len(), Some(values.len())),
+            InnerState::Finished { values } => {
+                (values.len() - self.idx, Some(values.len() - self.idx))
+            }
         }
     }
 }
@@ -189,7 +191,7 @@ where
     fn is_terminated(&self) -> bool {
         match &*self.inner.borrow() {
             InnerState::Running { .. } => false,
-            InnerState::Finished { .. } => true,
+            InnerState::Finished { values } => values.len() <= self.idx,
         }
     }
 }
@@ -223,43 +225,75 @@ mod test {
     use futures::stream::{self, StreamExt};
     use futures_core::stream::{FusedStream, Stream};
 
-    fn run<V: Clone, S: Stream<Item = V>>(stream: S) -> Vec<V> {
+    fn collect<V: Clone, S: Stream<Item = V>>(stream: S) -> Vec<V> {
         block_on(stream.collect::<Vec<_>>())
     }
 
     #[test]
-    fn test_stuff() {
+    fn test_everything() {
         let seen = RefCell::new(vec![]);
-        let stream =
-            stream::iter(vec!["a".to_string(), "b".to_string(), "c".to_string()].into_iter())
-                .inspect(|v| {
-                    seen.borrow_mut().push(v.to_string());
-                })
-                .shared();
+        let orig_stream = stream::iter(["a", "b", "c"].iter().map(|v| v.to_string()))
+            .inspect(|v| {
+                seen.borrow_mut().push(v.clone());
+            })
+            .shared();
         assert_eq!(*seen.borrow(), [] as [String; 0]);
-        assert_eq!(stream.size_hint(), (3, Some(3)));
-        assert_eq!(stream.is_terminated(), false);
+        assert_eq!(orig_stream.size_hint(), (3, Some(3)));
+        assert_eq!(orig_stream.is_terminated(), false);
 
-        let result: Vec<_> = run(stream.clone().take(1));
+        let stream = orig_stream.clone().take(1);
+        assert_eq!(stream.size_hint(), (1, Some(1)));
+        assert_eq!(stream.is_terminated(), false);
+        let result = collect(stream);
         assert_eq!(result, ["a"]);
         assert_eq!(*seen.borrow(), ["a"]);
+        assert_eq!(orig_stream.size_hint(), (3, Some(3)));
+        assert_eq!(orig_stream.is_terminated(), false);
+
+        let stream = orig_stream.clone();
         assert_eq!(stream.size_hint(), (3, Some(3)));
         assert_eq!(stream.is_terminated(), false);
-
-        let result: Vec<_> = run(stream.clone());
+        let result = collect(stream);
         assert_eq!(result, ["a", "b", "c"]);
         assert_eq!(*seen.borrow(), ["a", "b", "c"]);
-        assert_eq!(stream.size_hint(), (3, Some(3)));
-        assert_eq!(stream.is_terminated(), true);
+        assert_eq!(orig_stream.size_hint(), (3, Some(3)));
+        assert_eq!(orig_stream.is_terminated(), false);
 
-        let (result, result2): (Vec<_>, Vec<_>) = block_on(future::join(
-            stream.clone().skip(1).collect(),
-            stream.clone().collect(),
-        ));
-        assert_eq!(result, ["b", "c"]);
+        let stream1 = orig_stream.clone().skip(1);
+        assert_eq!(stream1.size_hint(), (2, Some(2)));
+        assert_eq!(stream1.is_terminated(), false);
+        let stream2 = orig_stream.clone();
+        assert_eq!(stream2.size_hint(), (3, Some(3)));
+        assert_eq!(stream2.is_terminated(), false);
+        let (result1, result2): (Vec<_>, Vec<_>) =
+            block_on(future::join(stream1.collect(), stream2.collect()));
+        assert_eq!(result1, ["b", "c"]);
         assert_eq!(result2, ["a", "b", "c"]);
         assert_eq!(*seen.borrow(), ["a", "b", "c"]);
+        assert_eq!(orig_stream.size_hint(), (3, Some(3)));
+        assert_eq!(orig_stream.is_terminated(), false);
+
+        let mut stream1 = orig_stream.clone();
+        assert_eq!(Some("a".to_string()), block_on(stream1.next()));
+        assert_eq!(stream1.size_hint(), (2, Some(2)));
+        assert_eq!(stream1.is_terminated(), false);
+        assert_eq!(Some("b".to_string()), block_on(stream1.next()));
+        assert_eq!(stream1.size_hint(), (1, Some(1)));
+        assert_eq!(stream1.is_terminated(), false);
+        assert_eq!(Some("c".to_string()), block_on(stream1.next()));
+        assert_eq!(stream1.size_hint(), (0, Some(0)));
+        assert_eq!(stream1.is_terminated(), true);
+        assert_eq!(orig_stream.size_hint(), (3, Some(3)));
+        assert_eq!(orig_stream.is_terminated(), false);
+    }
+
+    #[test]
+    fn test_size_hint_for_unfinished() {
+        let mut stream = stream::iter(["a", "b", "c"].iter().map(|v| v.to_string())).shared();
         assert_eq!(stream.size_hint(), (3, Some(3)));
-        assert_eq!(stream.is_terminated(), true);
+        assert_eq!(stream.is_terminated(), false);
+        block_on(stream.next());
+        assert_eq!(stream.size_hint(), (2, Some(2)));
+        assert_eq!(stream.is_terminated(), false);
     }
 }
