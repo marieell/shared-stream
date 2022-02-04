@@ -1,3 +1,7 @@
+# 0.2.1 (2022-02-04)
+
+* Fix `Shared::type\_hint` and `Shared::is\_terminated`
+
 # 0.2.0 (2021-03-12)
 
 * Breaking change: Remove first type parameter (`I`) of `Shared`.

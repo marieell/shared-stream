@@ -1,6 +1,6 @@
 [package]
 name = "shared_stream"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["marieell <marieell@tuta.io>"]
 edition = "2018"
 categories = ["asynchronous"]
