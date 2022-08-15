@@ -2,7 +2,7 @@
 name = "shared_stream"
 version = "0.2.1"
 authors = ["marieell <marieell@tuta.io>"]
-edition = "2018"
+edition = "2021"
 categories = ["asynchronous"]
 license = "AGPL-3.0+"
 repository = "https://github.com/marieell/shared-stream"
