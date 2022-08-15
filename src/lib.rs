@@ -1,4 +1,5 @@
-//! A crate for easily cloneable [`Stream`]s, similar to `FutureExt::shared`.
+//! A crate for easily cloneable [`Stream`]s, similar to
+//! `[FutureExt::shared](https://docs.rs/futures/latest/futures/future/trait.FutureExt.html#method.shared)`.
 //!
 //! # Examples
 //! ```
