@@ -42,25 +42,21 @@
     nonstandard_style,
     rust_2018_compatibility,
     rust_2018_idioms,
-    rustdoc,
+    rustdoc::all,
     unused,
     absolute_paths_not_starting_with_crate,
     anonymous_parameters,
     box_pointers,
     elided_lifetimes_in_paths,
     explicit_outlives_requirements,
-    invalid_html_tags,
     keyword_idents,
     macro_use_extern_crate,
     meta_variable_misuse,
     missing_copy_implementations,
-    missing_crate_level_docs,
     missing_debug_implementations,
-    missing_doc_code_examples,
     missing_docs,
     non_ascii_idents,
     pointer_structural_match,
-    private_doc_tests,
     single_use_lifetimes,
     trivial_casts,
     trivial_numeric_casts,
@@ -135,9 +131,9 @@ pub struct Shared<S: Stream> {
     idx: usize,
 }
 
-impl<S: Stream> fmt::Debug for Shared<S>
+impl<S> fmt::Debug for Shared<S>
 where
-    S: fmt::Debug,
+    S: Stream + fmt::Debug,
     S::Item: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -226,9 +222,9 @@ pub struct Ashared<S: Stream> {
     idx: usize,
 }
 
-impl<S: Stream> fmt::Debug for Ashared<S>
+impl<S> fmt::Debug for Ashared<S>
 where
-    S: fmt::Debug,
+    S: Stream + fmt::Debug,
     S::Item: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -368,58 +364,58 @@ mod test {
     ) {
         assert_eq!(seen(), [] as [String; 0]);
         assert_eq!(orig_stream.size_hint(), (3, Some(3)));
-        assert_eq!(orig_stream.is_terminated(), false);
+        assert!(!orig_stream.is_terminated());
 
         let stream = orig_stream.clone().take(1);
         assert_eq!(stream.size_hint(), (1, Some(1)));
-        assert_eq!(stream.is_terminated(), false);
+        assert!(!stream.is_terminated());
         let result = collect(stream);
         assert_eq!(result, ["a"]);
         assert_eq!(seen(), ["a"]);
         assert_eq!(orig_stream.size_hint(), (3, Some(3)));
-        assert_eq!(orig_stream.is_terminated(), false);
+        assert!(!orig_stream.is_terminated());
 
         let stream = orig_stream.clone();
         assert_eq!(stream.size_hint(), (3, Some(3)));
-        assert_eq!(stream.is_terminated(), false);
+        assert!(!stream.is_terminated());
         let result = collect(stream);
         assert_eq!(result, ["a", "b", "c"]);
         assert_eq!(seen(), ["a", "b", "c"]);
         assert_eq!(orig_stream.size_hint(), (3, Some(3)));
-        assert_eq!(orig_stream.is_terminated(), false);
+        assert!(!orig_stream.is_terminated());
 
         let stream1 = orig_stream.clone().skip(1);
         assert_eq!(stream1.size_hint(), (2, Some(2)));
-        assert_eq!(stream1.is_terminated(), false);
+        assert!(!stream1.is_terminated());
         let stream2 = orig_stream.clone();
         assert_eq!(stream2.size_hint(), (3, Some(3)));
-        assert_eq!(stream2.is_terminated(), false);
+        assert!(!stream2.is_terminated());
         let (result1, result2): (Vec<_>, Vec<_>) =
             block_on(future::join(stream1.collect(), stream2.collect()));
         assert_eq!(result1, ["b", "c"]);
         assert_eq!(result2, ["a", "b", "c"]);
         assert_eq!(seen(), ["a", "b", "c"]);
         assert_eq!(orig_stream.size_hint(), (3, Some(3)));
-        assert_eq!(orig_stream.is_terminated(), false);
+        assert!(!orig_stream.is_terminated());
 
         let mut stream1 = orig_stream.clone();
         assert_eq!(Some("a".to_string()), block_on(stream1.next()));
         assert_eq!(stream1.size_hint(), (2, Some(2)));
-        assert_eq!(stream1.is_terminated(), false);
+        assert!(!stream1.is_terminated());
         assert_eq!(Some("b".to_string()), block_on(stream1.next()));
         assert_eq!(stream1.size_hint(), (1, Some(1)));
-        assert_eq!(stream1.is_terminated(), false);
+        assert!(!stream1.is_terminated());
         assert_eq!(Some("c".to_string()), block_on(stream1.next()));
         assert_eq!(stream1.size_hint(), (0, Some(0)));
-        assert_eq!(stream1.is_terminated(), true);
+        assert!(stream1.is_terminated());
         assert_eq!(orig_stream.size_hint(), (3, Some(3)));
-        assert_eq!(orig_stream.is_terminated(), false);
+        assert!(!orig_stream.is_terminated());
     }
 
     #[test]
     fn test_everything_shared() {
         let seen = RefCell::new(vec![]);
-        let orig_stream = stream::iter(["a", "b", "c"].iter().map(|v| v.to_string()))
+        let orig_stream = stream::iter(["a", "b", "c"].iter().map(|v| (*v).to_string()))
             .inspect(|v| {
                 seen.borrow_mut().push(v.clone());
             })
@@ -430,7 +426,7 @@ mod test {
     #[test]
     fn test_everything_ashared() {
         let seen = RwLock::new(vec![]);
-        let orig_stream = stream::iter(["a", "b", "c"].iter().map(|v| v.to_string()))
+        let orig_stream = stream::iter(["a", "b", "c"].iter().map(|v| (*v).to_string()))
             .inspect(|v| {
                 seen.write().unwrap().push(v.clone());
             })
@@ -440,12 +436,12 @@ mod test {
 
     #[test]
     fn test_size_hint_for_unfinished() {
-        let mut stream = stream::iter(["a", "b", "c"].iter().map(|v| v.to_string())).shared();
+        let mut stream = stream::iter(["a", "b", "c"].iter().map(|v| (*v).to_string())).shared();
         assert_eq!(stream.size_hint(), (3, Some(3)));
-        assert_eq!(stream.is_terminated(), false);
-        block_on(stream.next());
+        assert!(!stream.is_terminated());
+        assert_eq!(block_on(stream.next()), Some("a".to_string()));
         assert_eq!(stream.size_hint(), (2, Some(2)));
-        assert_eq!(stream.is_terminated(), false);
+        assert!(!stream.is_terminated());
     }
 
     #[test]
