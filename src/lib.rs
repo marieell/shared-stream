@@ -92,6 +92,16 @@ pin_project! {
         Finished { values: Vec<S::Item> },
     }
 }
+
+impl<S: Stream> InnerState<S> {
+    const fn new(stream: S) -> Self {
+        Self::Running {
+            stream,
+            values: vec![],
+        }
+    }
+}
+
 impl<S: Stream> InnerState<S>
 where
     S::Item: Clone,
@@ -122,6 +132,27 @@ where
             });
         }
     }
+
+    fn size_hint(&self, offset: usize) -> (usize, Option<usize>) {
+        match self {
+            Self::Running { values, stream } => {
+                let upstream_cached = values.len() - offset;
+                let upstream = stream.size_hint();
+                (
+                    upstream.0 + upstream_cached,
+                    upstream.1.map(|v| v + upstream_cached),
+                )
+            }
+            Self::Finished { values } => (values.len() - offset, Some(values.len() - offset)),
+        }
+    }
+
+    fn is_terminated(&self, offset: usize) -> bool {
+        match self {
+            Self::Running { .. } => false,
+            Self::Finished { values } => values.len() <= offset,
+        }
+    }
 }
 
 /// Stream for the [`shared`](Share::shared) method.
@@ -147,10 +178,7 @@ where
 impl<S: Stream> Shared<S> {
     pub(crate) fn new(stream: S) -> Self {
         Self {
-            inner: Rc::new(RefCell::new(InnerState::Running {
-                stream,
-                values: vec![],
-            })),
+            inner: Rc::new(RefCell::new(InnerState::new(stream))),
             idx: 0,
         }
     }
@@ -187,19 +215,7 @@ where
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        match &*self.inner.borrow() {
-            InnerState::Running { values, stream } => {
-                let upstream_cached = values.len() - self.idx;
-                let upstream = stream.size_hint();
-                (
-                    upstream.0 + upstream_cached,
-                    upstream.1.map(|v| v + upstream_cached),
-                )
-            }
-            InnerState::Finished { values } => {
-                (values.len() - self.idx, Some(values.len() - self.idx))
-            }
-        }
+        self.inner.borrow().size_hint(self.idx)
     }
 }
 
@@ -208,10 +224,7 @@ where
     S::Item: Clone,
 {
     fn is_terminated(&self) -> bool {
-        match &*self.inner.borrow() {
-            InnerState::Running { .. } => false,
-            InnerState::Finished { values } => values.len() <= self.idx,
-        }
+        self.inner.borrow().is_terminated(self.idx)
     }
 }
 
@@ -238,10 +251,7 @@ where
 impl<S: Stream + Send> Ashared<S> {
     pub(crate) fn new(stream: S) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(InnerState::Running {
-                stream,
-                values: vec![],
-            })),
+            inner: Arc::new(RwLock::new(InnerState::new(stream))),
             idx: 0,
         }
     }
@@ -278,19 +288,7 @@ where
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        match &*self.inner.read().unwrap() {
-            InnerState::Running { values, stream } => {
-                let upstream_cached = values.len() - self.idx;
-                let upstream = stream.size_hint();
-                (
-                    upstream.0 + upstream_cached,
-                    upstream.1.map(|v| v + upstream_cached),
-                )
-            }
-            InnerState::Finished { values } => {
-                (values.len() - self.idx, Some(values.len() - self.idx))
-            }
-        }
+        self.inner.read().unwrap().size_hint(self.idx)
     }
 }
 
@@ -299,10 +297,7 @@ where
     S::Item: Clone,
 {
     fn is_terminated(&self) -> bool {
-        match &*self.inner.read().unwrap() {
-            InnerState::Running { .. } => false,
-            InnerState::Finished { values } => values.len() <= self.idx,
-        }
+        self.inner.read().unwrap().is_terminated(self.idx)
     }
 }
 
