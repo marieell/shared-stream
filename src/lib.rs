@@ -80,23 +80,23 @@ use futures_core::{FusedStream, Stream};
 use pin_project_lite::pin_project;
 use std::cell::RefCell;
 use std::fmt;
-use std::mem;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 pin_project! {
     #[project = InnerStateProj]
     #[derive(Debug)]
-    enum InnerState<S: Stream> {
-        Running { values: Vec<S::Item>, #[pin] stream: S },
-        Finished { values: Vec<S::Item> },
+    struct InnerState<S: Stream> {
+        values: Vec<S::Item>,
+        #[pin]
+        stream: Option<S>,
     }
 }
 
 impl<S: Stream> InnerState<S> {
     const fn new(stream: S) -> Self {
-        Self::Running {
-            stream,
+        Self {
+            stream: Some(stream),
             values: vec![],
         }
     }
@@ -113,45 +113,35 @@ where
     ) -> Poll<Option<S::Item>> {
         loop {
             let this = self.as_mut().project();
-            return Poll::Ready(match this {
-                InnerStateProj::Running { stream, values } => {
-                    let value = values.get(idx).cloned();
-                    if value.is_none() {
-                        let result = ready!(stream.poll_next(cx));
-                        if let Some(v) = result {
-                            values.push(v);
-                            continue;
-                        } else {
-                            let values = mem::take(values);
-                            self.set(Self::Finished { values });
-                        }
+            let value = this.values.get(idx).cloned();
+            if value.is_none() {
+                if let Some(stream) = this.stream.as_pin_mut() {
+                    if let Some(v) = ready!(stream.poll_next(cx)) {
+                        this.values.push(v);
+                        continue;
                     }
-                    value
                 }
-                InnerStateProj::Finished { values } => values.get(idx).cloned(),
-            });
+                self.as_mut().project().stream.set(None);
+            }
+            return Poll::Ready(value);
         }
     }
 
     fn size_hint(&self, offset: usize) -> (usize, Option<usize>) {
-        match self {
-            Self::Running { values, stream } => {
-                let upstream_cached = values.len() - offset;
+        let upstream_cached = self.values.len() - offset;
+        self.stream
+            .as_ref()
+            .map_or((upstream_cached, Some(upstream_cached)), |stream| {
                 let upstream = stream.size_hint();
                 (
                     upstream.0 + upstream_cached,
                     upstream.1.map(|v| v + upstream_cached),
                 )
-            }
-            Self::Finished { values } => (values.len() - offset, Some(values.len() - offset)),
-        }
+            })
     }
 
     fn is_terminated(&self, offset: usize) -> bool {
-        match self {
-            Self::Running { .. } => false,
-            Self::Finished { values } => values.len() <= offset,
-        }
+        self.stream.is_none() && self.values.len() <= offset
     }
 }
 
