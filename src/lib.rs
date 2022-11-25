@@ -128,35 +128,32 @@ impl<S: Stream> InnerState<S>
 where
     S::Item: Clone,
 {
-    fn get_item(
-        mut self: Pin<&mut Self>,
-        idx: usize,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<S::Item>> {
-        loop {
-            let this = self.as_mut().project();
-            let value = this.values.get(idx).cloned();
-            if value.is_none() {
-                if let Some(stream) = this.stream.as_pin_mut() {
-                    let waker = waker_ref(this.waker);
-                    let mut up_cx = Context::from_waker(&waker);
-                    match stream.poll_next(&mut up_cx) {
-                        Poll::Ready(Some(v)) => {
-                            this.values.push(v);
-                            continue;
-                        }
-                        Poll::Ready(None) => {
-                            self.as_mut().project().stream.set(None);
-                        }
-                        Poll::Pending => {
-                            this.waker.add_waker(cx);
-                            return Poll::Pending;
-                        }
-                    }
-                }
+    fn stream_is_pending(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> bool {
+        let this = self.as_mut().project();
+        let stream = this.stream.as_pin_mut().unwrap();
+        let waker = waker_ref(this.waker);
+        let mut up_cx = Context::from_waker(&waker);
+        match stream.poll_next(&mut up_cx) {
+            Poll::Ready(Some(v)) => {
+                this.values.push(v);
             }
-            return Poll::Ready(value);
+            Poll::Ready(None) => {
+                self.as_mut().project().stream.set(None);
+            }
+            Poll::Pending => {
+                this.waker.add_waker(cx);
+                return true;
+            }
         }
+        false
+    }
+
+    fn known_value(&self, idx: usize) -> Option<Option<S::Item>> {
+        let value = self.values.get(idx).cloned();
+        if value.is_some() || self.stream.is_none() {
+            return Some(value);
+        }
+        None
     }
 
     fn size_hint(&self, offset: usize) -> (usize, Option<usize>) {
@@ -221,13 +218,20 @@ where
 {
     type Item = S::Item;
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // pin project Pin<&mut Self> -> Pin<&mut InnerState<I, S>>
-        // this is only safe because we don't do anything else with Self::inner except
-        // cloning (the Rc) which doesn't move its content or make it accessible.
-        let result = unsafe {
-            let inner: &RefCell<InnerState<S>> =
-                Pin::into_inner_unchecked(self.as_ref()).inner.as_ref();
-            Pin::new_unchecked(&mut *inner.borrow_mut()).get_item(self.idx, cx)
+        let result = loop {
+            if let Some(v) = self.as_ref().inner.borrow().known_value(self.idx) {
+                break Poll::Ready(v);
+            }
+            // pin project Pin<&mut Self> -> Pin<&mut InnerState<S>>
+            // this is only safe because we don't do anything else with Self::inner except
+            // cloning (the Rc) which doesn't move its content or make it accessible.
+            unsafe {
+                let tmp = self.as_ref();
+                let mut inner = tmp.inner.borrow_mut();
+                if Pin::new_unchecked(&mut *inner).stream_is_pending(cx) {
+                    break Poll::Pending;
+                }
+            }
         };
         if let Poll::Ready(Some(_)) = result {
             // trivial safe pin projection
@@ -294,13 +298,20 @@ where
 {
     type Item = S::Item;
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // pin project Pin<&mut Self> -> Pin<&mut InnerState<I, S>>
-        // this is only safe because we don't do anything else with Self::inner except
-        // cloning (the Arc) which doesn't move its content or make it accessible.
-        let result = unsafe {
-            let inner: &RwLock<InnerState<S>> =
-                Pin::into_inner_unchecked(self.as_ref()).inner.as_ref();
-            Pin::new_unchecked(&mut *inner.write().unwrap()).get_item(self.idx, cx)
+        let result = loop {
+            if let Some(v) = self.as_ref().inner.read().unwrap().known_value(self.idx) {
+                break Poll::Ready(v);
+            }
+            // pin project Pin<&mut Self> -> Pin<&mut InnerState<S>>
+            // this is only safe because we don't do anything else with Self::inner except
+            // cloning (the Arc) which doesn't move its content or make it accessible.
+            unsafe {
+                let tmp = self.as_ref();
+                let mut inner = tmp.inner.write().unwrap();
+                if Pin::new_unchecked(&mut *inner).stream_is_pending(cx) {
+                    break Poll::Pending;
+                }
+            }
         };
         if let Poll::Ready(Some(_)) = result {
             // trivial safe pin projection
