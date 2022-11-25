@@ -75,13 +75,33 @@
 use core::pin::Pin;
 use core::task::Context;
 use core::task::Poll;
-use futures_core::ready;
 use futures_core::{FusedStream, Stream};
+use futures_util::task::{waker_ref, ArcWake};
 use pin_project_lite::pin_project;
 use std::cell::RefCell;
 use std::fmt;
+use std::mem;
 use std::rc::Rc;
+use std::sync::Mutex;
 use std::sync::{Arc, RwLock};
+use std::task::Waker;
+
+#[derive(Debug)]
+struct SharedWaker(Mutex<Vec<Waker>>);
+
+impl SharedWaker {
+    fn add_waker(&self, cx: &mut Context<'_>) {
+        self.0.lock().unwrap().push(cx.waker().clone());
+    }
+}
+
+impl ArcWake for SharedWaker {
+    fn wake_by_ref(arc_self: &Arc<Self>) {
+        for waker in mem::take(&mut *arc_self.0.lock().unwrap()) {
+            waker.wake();
+        }
+    }
+}
 
 pin_project! {
     #[project = InnerStateProj]
@@ -90,14 +110,16 @@ pin_project! {
         values: Vec<S::Item>,
         #[pin]
         stream: Option<S>,
+        waker: Arc<SharedWaker>,
     }
 }
 
 impl<S: Stream> InnerState<S> {
-    const fn new(stream: S) -> Self {
+    fn new(stream: S) -> Self {
         Self {
             stream: Some(stream),
             values: vec![],
+            waker: Arc::new(SharedWaker(Mutex::new(vec![]))),
         }
     }
 }
@@ -116,12 +138,22 @@ where
             let value = this.values.get(idx).cloned();
             if value.is_none() {
                 if let Some(stream) = this.stream.as_pin_mut() {
-                    if let Some(v) = ready!(stream.poll_next(cx)) {
-                        this.values.push(v);
-                        continue;
+                    let waker = waker_ref(this.waker);
+                    let mut up_cx = Context::from_waker(&waker);
+                    match stream.poll_next(&mut up_cx) {
+                        Poll::Ready(Some(v)) => {
+                            this.values.push(v);
+                            continue;
+                        }
+                        Poll::Ready(None) => {
+                            self.as_mut().project().stream.set(None);
+                        }
+                        Poll::Pending => {
+                            this.waker.add_waker(cx);
+                            return Poll::Pending;
+                        }
                     }
                 }
-                self.as_mut().project().stream.set(None);
             }
             return Poll::Ready(value);
         }
@@ -432,5 +464,42 @@ mod test {
     #[test]
     fn ashared_is_send() {
         let _: &dyn Send = &stream::empty::<()>().ashared();
+    }
+
+    use futures::channel::mpsc::channel;
+    use futures::executor::LocalPool;
+    use futures::task::LocalSpawnExt;
+
+    #[test]
+    fn test_wake_multiple_wakers() {
+        let mut pool = LocalPool::new();
+        let spawner = pool.spawner();
+
+        let (mut sender, receiver) = channel(1);
+        let mut receiver1 = receiver.ashared();
+        let mut receiver2 = receiver1.clone();
+
+        spawner
+            .spawn_local(async move {
+                assert_eq!(receiver1.next().await, Some(1));
+            })
+            .unwrap();
+        spawner
+            .spawn_local(async move {
+                assert_eq!(receiver2.next().await, Some(1));
+            })
+            .unwrap();
+
+        // Run both tasks until they are stalled (since nothing has been sent through the channel
+        // yet)
+        pool.run_until_stalled();
+
+        // Send something through the channel so that both receivers have something and the tasks
+        // are not stalled anymore
+        sender.try_send(1).unwrap();
+
+        // Assert that both tasks were indeed woken up
+        assert!(pool.try_run_one());
+        assert!(pool.try_run_one());
     }
 }

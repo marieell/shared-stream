@@ -12,6 +12,7 @@ keywords = ["async", "stream", "streams", "shared"]
 
 [dependencies]
 futures-core = { version = "^0.3", default-features = false }
+futures-util = { version = "^0.3", default-features = false }
 pin-project-lite = "^0.2"
 
 [dev-dependencies]
